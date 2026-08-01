@@ -32,14 +32,17 @@ public final class CoreAIMoebiusInpaintPackage: ModelPackage {
             provenance: Provenance(sourceRepo: "coreai-community/Moebius-CoreAI",
                                    revision: "main", tier: 3),
             requirements: RequirementsManifest(
-                // PROVISIONAL split footprint from the CLI verify harness (unified memory during
-                // the 19-step loop + VAE calls; assets 1.0 GB on disk, host buffers are small
-                // because activations live inside the MPSGraph executables). ⚠️ Marked for in-app
-                // re-baseline via ValidationHarness before any registry Eff claim — the fleet rule
-                // is that smoke figures are provisional until phys_footprint is measured in-app.
+                // MEASURED in-app 2026-08-01 via ValidationHarness (Moebius Demo, isolate:true so
+                // co-residents cannot inflate the floor), 2250×4000 source · 20 steps:
+                //   floor 1.82 GB · peak 3.07 GB · activation 1.25 GB · load 0.6 s · run 2.0 s
+                // This CORRECTED the provisional CLI-derived declaration in BOTH directions —
+                // resident was UNDER-declared (1.20 → 1.82 GB, +52%) and activation OVER-declared
+                // (2.00 → 1.25 GB, −38%). Same both-directions pattern the MLX sibling showed; a
+                // CLI harness cannot see either, which is the whole reason the in-app gate exists.
+                // Declared with headroom over the measurement.
                 footprints: [
-                    QuantFootprint(quant: .fp16, residentBytes: 1_200_000_000,
-                                   peakActivationBytes: 2_000_000_000)
+                    QuantFootprint(quant: .fp16, residentBytes: 1_900_000_000,
+                                   peakActivationBytes: 1_400_000_000)
                 ],
                 // GPU is the measured backend. NOT .coreMLANE: full-model ANE compilation is
                 // blocked on apple/coreai-models#138; declaring ANE here would promise a pool
@@ -87,8 +90,19 @@ public final class CoreAIMoebiusInpaintPackage: ModelPackage {
     }
 
     public func unload() async {
-        // No MLX pool to flush — executables and their working sets are owned by the OS E5RT
-        // cache; dropping the reference releases the process-side buffers.
+        // ⚠️ KNOWN LIMITATION, measured 2026-08-01: dropping the reference does NOT return the
+        // memory. ValidationHarness reports **1252 MB still resident after run + evict**
+        // ("retained 1252 MB … a live model holding intermediates"). The earlier comment here
+        // asserted the opposite — that the OS E5RT cache owns everything and releasing the
+        // reference frees the process-side buffers. That was an assumption, and it is wrong:
+        // the specialized MPSGraph executables keep their working set mapped in-process.
+        //
+        // Consequence for the engine: evicting this package frees far less than its declared
+        // resident floor suggests, so a governor sizing a second model against a fresh eviction
+        // will over-commit. An MLX package's `MLX.Memory.clearCache()` has no CoreAI equivalent
+        // that we have found; if the runtime gains one, call it here.
+        // ⚠️ The CoreAIRealESRGAN sibling carries the SAME unverified assumption in its unload()
+        // and has never been VAL-measured — check it before trusting its eviction either.
         pipeline = nil
     }
 
