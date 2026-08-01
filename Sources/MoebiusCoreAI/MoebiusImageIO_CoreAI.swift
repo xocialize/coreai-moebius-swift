@@ -66,7 +66,11 @@ public enum MoebiusImageIO_CoreAI {
         let fillCG = try toCGImage(chw, width: side, height: side)
         let fillFull = rgbCHW(resize(fillCG, width: w, height: h))
         let sourceFull = rgbCHW(source)
-        var soft = binarizedMask(mask)
+        // ⚠️ Resize the mask to the SOURCE's pixel dims first — a caller may hand us a mask sized
+        // in POINTS while the image is in PIXELS (any asset whose DPI ≠ 72; a 150-DPI 2250×4000
+        // PNG reports 1080×1920 points). The MLX sibling crashed on exactly this before the same
+        // fix landed there. The mask is authoritative for WHERE, never for HOW BIG.
+        var soft = binarizedMask(resize(mask, width: w, height: h))
         for _ in 0 ..< 3 { soft = boxBlur3(soft, width: w, height: h) }
         let n = w * h
         var out = [Float](repeating: 0, count: 3 * n)
