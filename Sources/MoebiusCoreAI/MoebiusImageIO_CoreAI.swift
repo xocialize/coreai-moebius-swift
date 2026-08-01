@@ -1,3 +1,4 @@
+import Accelerate
 import CoreGraphics
 import Foundation
 
@@ -84,19 +85,28 @@ public enum MoebiusImageIO_CoreAI {
     }
 
     /// 3×3 box mean with edge replication — mirrors the sibling's `boxBlur3NCHW`.
+    ///
+    /// ⚠️ vImage, not a scalar loop. MEASURED in-app 2026-08-01: the scalar version cost **12.5 s**
+    /// of a 14.1 s run on a 2250×4000 source (three iterations × 9 taps × 9M px ≈ 243M scalar ops),
+    /// while the run's actual model work was 1.6 s. The MLX sibling never showed this because its
+    /// paste rides MLX's vectorized array ops. Host-side postprocess must be vectorized in a
+    /// package whose accelerator work is measured in milliseconds — otherwise the compositor IS
+    /// the runtime. (The CLI parity gate missed it entirely: it composites nothing, so this only
+    /// ever appears under in-app validation at real resolutions.)
     static func boxBlur3(_ x: [Float], width w: Int, height h: Int) -> [Float] {
+        var src = x
         var out = [Float](repeating: 0, count: w * h)
-        for y in 0 ..< h {
-            for xx in 0 ..< w {
-                var acc: Float = 0
-                for dy in -1 ... 1 {
-                    let sy = min(max(y + dy, 0), h - 1)
-                    for dx in -1 ... 1 {
-                        let sx = min(max(xx + dx, 0), w - 1)
-                        acc += x[sy * w + sx]
-                    }
+        let kernel = [Float](repeating: 1.0 / 9.0, count: 9)
+        src.withUnsafeMutableBufferPointer { sp in
+            out.withUnsafeMutableBufferPointer { op in
+                var inBuf = vImage_Buffer(data: sp.baseAddress, height: vImagePixelCount(h),
+                                          width: vImagePixelCount(w), rowBytes: w * 4)
+                var outBuf = vImage_Buffer(data: op.baseAddress, height: vImagePixelCount(h),
+                                           width: vImagePixelCount(w), rowBytes: w * 4)
+                _ = kernel.withUnsafeBufferPointer { kp in
+                    vImageConvolve_PlanarF(&inBuf, &outBuf, nil, 0, 0, kp.baseAddress!, 3, 3, 0,
+                                           vImage_Flags(kvImageEdgeExtend))
                 }
-                out[y * w + xx] = acc / 9
             }
         }
         return out
